@@ -1,5 +1,5 @@
 import logging
-from configparser import ConfigParser
+from configparser import ConfigParser, NoSectionError
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -13,17 +13,16 @@ def configure_logging(log_directory):
 
 def read_config(config_file_path):
     config = ConfigParser()
-    try:
-        config.read(config_file_path)
-        # Assuming 'Paths' is a section in your INI file
-        paths_config = {key: value for key, value in config['Paths'].items()}
-    except FileNotFoundError as e:
-        logging.error(f"Config file not found: {e}")
-        raise
-    except KeyError as e:
-        logging.error(f"Missing expected section or keys in config file: {e}")
-        raise
-    return paths_config
+    if not config.read(config_file_path):
+        error_msg = f"Could not read config file or file is empty: {config_file_path}"
+        logging.error(error_msg)
+        raise FileNotFoundError(error_msg)
+    # Check for the 'Paths' section
+    if 'Paths' not in config:
+        error_msg = f"'[Paths]' section is missing in the config file: {config_file_path}"
+        logging.error(error_msg)
+        raise NoSectionError(error_msg)
+    return {key: value for key, value in config.items('Paths')}
 
 def find_modified_files(directories, cutoff_time):
     modified_files = []
@@ -34,38 +33,40 @@ def find_modified_files(directories, cutoff_time):
     return modified_files
 
 def write_modified_files_list(modified_files, output_file_path):
-    try:
-        with output_file_path.open('w') as file:
-            for modified_file in modified_files:
-                file.write(f"{modified_file}\n")
-    except Exception as e:
-        logging.error(f"Failed to write modified files list: {e}")
-        raise
+    with output_file_path.open('w') as file:
+        for modified_file in modified_files:
+            file.write(f"{modified_file}\n")
 
 def main():
-    # Fixed path for the config file based on the given requirement
-    config_file_path = Path('/CONFIG/config.ini')
+    try:
+        config_file_path = Path('/CONFIG/config.ini')
+        config = read_config(config_file_path)
+        directories_to_scan = config.get('directories_to_scan', '').split(',')
+        log_path = Path(config.get('log_path', 'LOG'))
+        modified_files_path = Path(config.get('modified_files_path', 'MODIFIED_FILE_LIST'))
 
-    # Read config and setup directories
-    config = read_config(config_file_path)
-    directories_to_scan = config['directories_to_scan'].split(',')
-    log_path = Path(config.get('log_path', 'LOG'))
-    modified_files_path = Path(config.get('modified_files_path', 'MODIFIED_FILE_LIST'))
+        log_path.mkdir(exist_ok=True)
+        modified_files_path.mkdir(exist_ok=True)
+        configure_logging(log_path)
 
-    log_path.mkdir(exist_ok=True)
-    modified_files_path.mkdir(exist_ok=True)
-    configure_logging(log_path)
+        if not directories_to_scan:
+            logging.warning("No directories specified for scanning. Check your config.ini file.")
 
-    cutoff_time = datetime.now() - timedelta(days=1)
+        cutoff_time = datetime.now() - timedelta(days=1)
+        modified_files = find_modified_files(directories_to_scan, cutoff_time)
 
-    modified_files = find_modified_files(directories_to_scan, cutoff_time)
-    if modified_files:
-        timestamp = datetime.now().strftime('%Y_%m_%d_%H_%M_%S')
-        output_filename = f"{timestamp}.txt"
-        write_modified_files_list(modified_files, modified_files_path / output_filename)
-        logging.info(f"Found and logged {len(modified_files)} modified files.")
-    else:
-        logging.info("No modified files found.")
+    except Exception as e:
+        logging.error(f"An error occurred: {e}")
+        raise
+    finally:
+        if 'modified_files' in locals() and modified_files:
+            timestamp = datetime.now().strftime('%Y_%m_%d_%H_%M_%S')
+            output_filename = f"{timestamp}.txt"
+            write_modified_files_list(modified_files, modified_files_path / output_filename)
+            logging.info(f"Found and logged {len(modified_files)} modified files.")
+        else:
+            logging.info("No modified files found or an error occurred before file scanning.")
+        logging.info("Script execution completed.")
 
 if __name__ == "__main__":
     main()
